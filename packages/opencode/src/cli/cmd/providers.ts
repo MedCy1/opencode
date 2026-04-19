@@ -13,6 +13,7 @@ import { Plugin } from "../../plugin"
 import { Instance } from "../../project/instance"
 import type { Hooks } from "@opencode-ai/plugin"
 import { Process } from "../../util"
+import * as Locale from "../../util/locale"
 import { text } from "node:stream/consumers"
 import { Effect } from "effect"
 
@@ -42,6 +43,14 @@ const listOpenAI = () =>
     }),
   )
 
+const statusOpenAI = () =>
+  AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const auth = yield* Auth.Service
+      return yield* auth.openaiStatus()
+    }),
+  )
+
 const switchOpenAI = (accountID: string) =>
   AppRuntime.runPromise(
     Effect.gen(function* () {
@@ -65,6 +74,32 @@ function formatOpenAIAccountLabel(input: {
   const detail = input.account.label ?? input.account.email ?? input.account.accountId ?? `Account ${input.index + 1}`
   if (!input.account.active) return detail
   return `${detail} ${UI.Style.TEXT_DIM}(active)`
+}
+
+export function formatOpenAIAccountRuntimeStatus(account: Auth.OpenAIAccountSummary, now = Date.now()) {
+  if (account.available) return "ready"
+  if (typeof account.rateLimitedUntil === "number" && account.rateLimitedUntil > now) {
+    return `rate limited for ${Locale.duration(account.rateLimitedUntil - now)}`
+  }
+  if (typeof account.cooldownUntil === "number" && account.cooldownUntil > now) {
+    const wait = Locale.duration(account.cooldownUntil - now)
+    if (account.cooldownReason) return `cooling down (${account.cooldownReason}) for ${wait}`
+    return `cooling down for ${wait}`
+  }
+  return "unavailable"
+}
+
+export function formatOpenAIAccountLastUsed(lastUsed: number, now = Date.now()) {
+  if (!lastUsed) return "never"
+  const delta = now - lastUsed
+  if (delta < 86_400_000) return `${Locale.duration(delta)} ago`
+  return Locale.datetime(lastUsed)
+}
+
+function formatOpenAITags(input: { active: boolean; next: boolean }) {
+  const tags = [input.active ? "active" : undefined, input.next ? "next" : undefined].filter((value) => value !== undefined)
+  if (tags.length === 0) return ""
+  return ` ${UI.Style.TEXT_DIM}(${tags.join(", ")})`
 }
 
 async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, methodName?: string): Promise<boolean> {
@@ -280,6 +315,7 @@ export const ProvidersCommand = cmd({
   builder: (yargs) =>
     yargs
       .command(ProvidersListCommand)
+      .command(ProvidersStatusCommand)
       .command(ProvidersLoginCommand)
       .command(ProvidersLogoutCommand)
       .command(ProvidersSwitchCommand)
@@ -346,6 +382,80 @@ export const ProvidersListCommand = cmd({
 
       prompts.outro(`${activeEnvVars.length} environment variable` + (activeEnvVars.length === 1 ? "" : "s"))
     }
+  },
+})
+
+export const ProvidersStatusCommand = cmd({
+  command: "status",
+  aliases: ["st"],
+  describe: "show credential health and OpenAI rotation status",
+  async handler() {
+    UI.empty()
+    const authPath = path.join(Global.Path.data, "auth.json")
+    const homedir = os.homedir()
+    const displayPath = authPath.startsWith(homedir) ? authPath.replace(homedir, "~") : authPath
+    prompts.intro(`Credential status ${UI.Style.TEXT_DIM}${displayPath}`)
+
+    const [entries, openai, database] = await Promise.all([
+      AppRuntime.runPromise(
+        Effect.gen(function* () {
+          const auth = yield* Auth.Service
+          return Object.entries(yield* auth.all())
+        }),
+      ),
+      statusOpenAI(),
+      ModelsDev.get(),
+    ])
+
+    const now = Date.now()
+    const openaiAccounts = openai.accounts
+    if (openaiAccounts.length > 0) {
+      const activeIndex = openaiAccounts.findIndex((account) => account.id === openai.activeAccountId)
+      const nextIndex = openaiAccounts.findIndex((account) => account.id === openai.nextAccountId)
+      const active = activeIndex === -1 ? undefined : openaiAccounts[activeIndex]
+      const next = nextIndex === -1 ? undefined : openaiAccounts[nextIndex]
+
+      prompts.log.info(`OpenAI ${UI.Style.TEXT_DIM}oauth (${openaiAccounts.length} accounts)`)
+      if (active) {
+        prompts.log.message(
+          `  Active: ${formatOpenAIAccountLabel({ account: active, index: activeIndex })}`,
+        )
+      }
+      if (next) {
+        prompts.log.message(
+          `  Next request: ${formatOpenAIAccountLabel({ account: next, index: nextIndex })}`,
+        )
+      }
+      if (!next && openai.nextWait) {
+        prompts.log.message(
+          `  Next request: waiting ${Locale.duration(openai.nextWait)} ${UI.Style.TEXT_DIM}(${openai.nextWaitReason === "rate_limit" ? "rate limited" : "cooldown"})`,
+        )
+      }
+
+      openaiAccounts.forEach((account, index) => {
+        const detail = account.label ?? account.email ?? account.accountId ?? `Account ${index + 1}`
+        prompts.log.message(
+          `  ${index + 1}. ${detail}${formatOpenAITags({ active: account.active, next: openai.nextAccountId === account.id })}`,
+        )
+        prompts.log.message(`     status: ${formatOpenAIAccountRuntimeStatus(account, now)}`)
+        prompts.log.message(`     last used: ${formatOpenAIAccountLastUsed(account.lastUsed, now)}`)
+      })
+    }
+
+    const others = entries.filter(([providerID, info]) => providerID !== "openai" || info.type !== "oauth")
+    if (others.length > 0) {
+      if (openaiAccounts.length > 0) UI.empty()
+      prompts.log.info("Other credentials")
+      others.forEach(([providerID, info]) => {
+        prompts.log.message(`  ${(database[providerID]?.name || providerID)} ${UI.Style.TEXT_DIM}${info.type}`)
+      })
+    }
+
+    if (openaiAccounts.length === 0 && others.length === 0) {
+      prompts.log.info("No saved credentials found")
+    }
+
+    prompts.outro("Done")
   },
 })
 

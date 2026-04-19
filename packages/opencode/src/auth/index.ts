@@ -225,6 +225,16 @@ export class OpenAIAccountsResult extends Schema.Class<OpenAIAccountsResult>("Op
   static readonly zod = zod(this)
 }
 
+export class OpenAIStatusResult extends Schema.Class<OpenAIStatusResult>("OpenAIOAuthStatusResult")({
+  activeAccountId: Schema.optional(Schema.String),
+  nextAccountId: Schema.optional(Schema.String),
+  nextWait: Schema.optional(Schema.Number),
+  nextWaitReason: Schema.optional(Schema.Literals(["rate_limit", "cooldown"])),
+  accounts: Schema.Array(OpenAIAccountSummary),
+}) {
+  static readonly zod = zod(this)
+}
+
 export interface OpenAIAccountInput {
   id?: string
   refresh: string
@@ -423,6 +433,24 @@ export function summarizeOpenAIAccounts(input?: Info, now = Date.now()) {
   })
 }
 
+export function summarizeOpenAIStatus(input?: Info, now = Date.now()) {
+  if (!input || input.type !== "oauth") {
+    return new OpenAIStatusResult({
+      accounts: [],
+    })
+  }
+
+  const auth = normalizeOpenAIOauth(input)
+  const next = nextOpenAIAccount(auth, now)
+  return new OpenAIStatusResult({
+    activeAccountId: auth.activeAccountId,
+    nextAccountId: next.account?.id,
+    nextWait: next.account ? undefined : next.wait || undefined,
+    nextWaitReason: next.account ? undefined : next.rateLimitWait > 0 ? "rate_limit" : next.cooldownWait > 0 ? "cooldown" : undefined,
+    accounts: summarizeOpenAIAccounts(auth, now).accounts,
+  })
+}
+
 export class Api extends Schema.Class<Api>("ApiAuth")({
   type: Schema.Literal("api"),
   key: Schema.String,
@@ -450,6 +478,7 @@ export interface Interface {
   readonly set: (key: string, info: Info) => Effect.Effect<void, AuthError>
   readonly remove: (key: string) => Effect.Effect<void, AuthError>
   readonly openaiAccounts: () => Effect.Effect<OpenAIAccountsResult, AuthError>
+  readonly openaiStatus: () => Effect.Effect<OpenAIStatusResult, AuthError>
   readonly upsertOpenAIAccount: (input: OpenAIAccountInput) => Effect.Effect<Oauth, AuthError>
   readonly selectOpenAIAccount: (accountID: string) => Effect.Effect<Oauth, AuthError>
   readonly removeOpenAIAccount: (accountID: string) => Effect.Effect<Oauth | undefined, AuthError>
@@ -514,6 +543,10 @@ export const layer = Layer.effect(
       return summarizeOpenAIAccounts(yield* get(OPENAI_PROVIDER_ID))
     })
 
+    const openaiStatus = Effect.fn("Auth.openaiStatus")(function* () {
+      return summarizeOpenAIStatus(yield* get(OPENAI_PROVIDER_ID))
+    })
+
     const upsertOpenAIAccountFx = mutate(
       "Auth.upsertOpenAIAccount",
       (data: Record<string, Info>, input: OpenAIAccountInput) => {
@@ -557,6 +590,7 @@ export const layer = Layer.effect(
       set,
       remove,
       openaiAccounts,
+      openaiStatus,
       upsertOpenAIAccount: upsertOpenAIAccountFx,
       selectOpenAIAccount: selectOpenAIAccountFx,
       removeOpenAIAccount: removeOpenAIAccountFx,

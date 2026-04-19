@@ -63,6 +63,53 @@ describe("provider openai oauth account routes", () => {
     })
   })
 
+  test("status route reports the next OpenAI account and wait state", async () => {
+    await using tmp = await tmpdir({ git: true })
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        const current = await runAuth(
+          Effect.gen(function* () {
+            const auth = yield* Auth.Service
+            yield* auth.remove("openai")
+            yield* auth.upsertOpenAIAccount({
+              refresh: "rt-1",
+              access: "at-1",
+              expires: 1,
+              accountId: "acc-1",
+              email: "one@example.com",
+            })
+            const oauth = yield* auth.upsertOpenAIAccount({
+              refresh: "rt-2",
+              access: "at-2",
+              expires: 2,
+              accountId: "acc-2",
+              email: "two@example.com",
+            })
+            const blocked = Auth.updateOpenAIAccount(
+              oauth,
+              Auth.summarizeOpenAIAccounts(oauth).accounts.find((account) => account.accountId === "acc-2")!.id,
+              { rateLimitedUntil: Date.now() + 10_000 },
+            )
+            yield* auth.set("openai", blocked!)
+            return blocked!
+          }),
+        )
+
+        const app = Server.Default().app
+        const response = await app.request("/provider/openai/oauth/status")
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(
+          expect.objectContaining({
+            activeAccountId: current.activeAccountId,
+            nextAccountId: expect.any(String),
+          }),
+        )
+      },
+    })
+  })
+
   test("select route updates the active OpenAI OAuth account", async () => {
     await using tmp = await tmpdir({ git: true })
     await Instance.provide({

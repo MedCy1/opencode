@@ -8,12 +8,13 @@ import { DialogPrompt } from "../ui/dialog-prompt"
 import { Link } from "../ui/link"
 import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
-import type { OpenAioAuthAccountSummary, ProviderAuthAuthorization, ProviderAuthMethod } from "@opencode-ai/sdk/v2"
+import type { OpenAioAuthAccountSummary, OpenAioAuthStatusResult, ProviderAuthAuthorization, ProviderAuthMethod } from "@opencode-ai/sdk/v2"
 import { DialogModel } from "./dialog-model"
 import { useKeyboard } from "@opentui/solid"
 import * as Clipboard from "@tui/util/clipboard"
 import { useToast } from "../ui/toast"
 import { isConsoleManagedProvider } from "@tui/util/provider-origin"
+import { Locale } from "@/util"
 
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
@@ -34,11 +35,39 @@ export function openAIAccountLabel(account: Pick<OpenAioAuthAccountSummary, "lab
 }
 
 export function openAIAccountStatus(account: OpenAioAuthAccountSummary) {
-  if (account.active) return "Active"
   if (account.available) return "Ready"
-  if (account.rateLimitedUntil) return "Rate limited"
-  if (account.cooldownUntil) return account.cooldownReason ? `Cooling down (${account.cooldownReason})` : "Cooling down"
+  if (typeof account.rateLimitedUntil === "number" && account.rateLimitedUntil > Date.now()) {
+    return `Rate limited for ${Locale.duration(account.rateLimitedUntil - Date.now())}`
+  }
+  if (typeof account.cooldownUntil === "number" && account.cooldownUntil > Date.now()) {
+    const wait = Locale.duration(account.cooldownUntil - Date.now())
+    return account.cooldownReason ? `Cooling down (${account.cooldownReason}) for ${wait}` : `Cooling down for ${wait}`
+  }
   return "Unavailable"
+}
+
+export function openAIAccountLastUsed(lastUsed: number, now = Date.now()) {
+  if (!lastUsed) return "last used never"
+  const delta = Math.max(now - lastUsed, 0)
+  if (delta < 86_400_000) return `last used ${Locale.duration(delta)} ago`
+  return `last used ${Locale.datetime(lastUsed)}`
+}
+
+export function openAIStatusSummary(status: OpenAioAuthStatusResult, now = Date.now()) {
+  const activeIndex = status.accounts.findIndex((account) => account.id === status.activeAccountId)
+  const nextIndex = status.accounts.findIndex((account) => account.id === status.nextAccountId)
+  const active = activeIndex === -1 ? undefined : status.accounts[activeIndex]
+  const next = nextIndex === -1 ? undefined : status.accounts[nextIndex]
+  return {
+    active: active ? openAIAccountLabel(active, activeIndex) : undefined,
+    next: next
+      ? openAIAccountLabel(next, nextIndex)
+      : status.nextWait
+        ? `Waiting ${Locale.duration(status.nextWait)} (${status.nextWaitReason === "rate_limit" ? "rate limited" : "cooldown"})`
+        : undefined,
+    nextAccountId: next?.id,
+    now,
+  }
 }
 
 export function createDialogProviderOptions() {
@@ -134,14 +163,13 @@ export function createDialogProviderOptions() {
   }
 
   async function openOpenAIOptions(methods: MethodOption[]) {
-    const accounts = await sdk.client.provider.openai.oauth.account
-      .list({}, { throwOnError: true })
+    const status = await sdk.client.provider.openai.oauth.account
+      .status({}, { throwOnError: true })
       .then((x) => x.data)
       .catch(() => ({ accounts: [] }))
     const oauthMethods = methods.filter((entry) => entry.method.type === "oauth")
     const apiMethods = methods.filter((entry) => entry.method.type === "api")
-    const activeAccount = accounts.accounts.find((account) => account.active) ?? accounts.accounts[0]
-    const activeIndex = activeAccount ? accounts.accounts.findIndex((account) => account.id === activeAccount.id) : 0
+    const summary = openAIStatusSummary(status)
     dialog.replace(() => (
       <DialogSelect
         title="OpenAI"
@@ -149,9 +177,9 @@ export function createDialogProviderOptions() {
           ...(oauthMethods.length
             ? [
                 {
-                  title: accounts?.accounts.length ? "Add ChatGPT account" : "Connect ChatGPT account",
+                  title: status.accounts.length ? "Add ChatGPT account" : "Connect ChatGPT account",
                   value: "oauth",
-                  description: accounts?.accounts.length ? `${accounts.accounts.length} saved account(s)` : "ChatGPT Plus/Pro",
+                  description: status.accounts.length ? `${status.accounts.length} saved account(s)` : "ChatGPT Plus/Pro",
                   onSelect: () => {
                     void chooseMethod("openai", oauthMethods, "Choose ChatGPT auth method")
                   },
@@ -170,12 +198,12 @@ export function createDialogProviderOptions() {
                 },
               ]
             : []),
-          ...(accounts?.accounts.length
+          ...(status.accounts.length
             ? [
                 {
                   title: "Manage ChatGPT accounts",
                   value: "manage",
-                  description: activeAccount ? openAIAccountLabel(activeAccount, activeIndex >= 0 ? activeIndex : 0) : undefined,
+                  description: summary.next ?? summary.active,
                   onSelect: () => {
                     void openOpenAIManager(methods)
                   },
@@ -262,7 +290,7 @@ function DialogOpenAIAccounts(props: { oauthMethods: MethodOption[]; onAddAccoun
   }
 
   const [accounts, { refetch }] = createResource(async () => {
-    const result = await sdk.client.provider.openai.oauth.account.list({}, { throwOnError: true })
+    const result = await sdk.client.provider.openai.oauth.account.status({}, { throwOnError: true })
     return result.data ?? { accounts: [] }
   })
 
@@ -281,6 +309,8 @@ function DialogOpenAIAccounts(props: { oauthMethods: MethodOption[]; onAddAccoun
       ]
     }
 
+    const summary = openAIStatusSummary(accounts.latest)
+
     return [
       ...(props.oauthMethods.length
         ? [
@@ -292,6 +322,30 @@ function DialogOpenAIAccounts(props: { oauthMethods: MethodOption[]; onAddAccoun
                 void props.onAddAccount()
               },
             },
+          ]
+        : []),
+      ...(summary.active || summary.next
+        ? [
+            ...(summary.active
+              ? [
+                  {
+                    title: `Active: ${summary.active}`,
+                    value: "status-active",
+                    category: "Status",
+                    onSelect: () => {},
+                  },
+                ]
+              : []),
+            ...(summary.next
+              ? [
+                  {
+                    title: `Next request: ${summary.next}`,
+                    value: "status-next",
+                    category: "Status",
+                    onSelect: () => {},
+                  },
+                ]
+              : []),
           ]
         : []),
       {
@@ -310,12 +364,12 @@ function DialogOpenAIAccounts(props: { oauthMethods: MethodOption[]; onAddAccoun
         },
       },
       ...accounts.latest.accounts.map((account, index) => ({
-        title: openAIAccountLabel(account, index),
+        title: `${openAIAccountLabel(account, index)}${account.active ? " (active)" : summary.nextAccountId === account.id ? " (next)" : ""}`,
         value: account,
         category: "Accounts",
         description: openAIAccountStatus(account),
-        footer: account.accountId,
-        gutter: account.active ? <text fg={theme.success}>✓</text> : undefined,
+        footer: [account.accountId, openAIAccountLastUsed(account.lastUsed)].filter(Boolean).join(" · "),
+        gutter: account.active ? <text fg={theme.success}>✓</text> : summary.nextAccountId === account.id ? <text>→</text> : undefined,
         onSelect: () => {
           dialog.replace(() => (
             <DialogOpenAIAccount

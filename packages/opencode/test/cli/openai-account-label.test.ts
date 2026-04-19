@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { openAIAccountLabel, openAIAccountStatus } from "../../src/cli/cmd/tui/component/dialog-provider"
+import { openAIAccountLabel, openAIAccountLastUsed, openAIAccountStatus, openAIStatusSummary } from "../../src/cli/cmd/tui/component/dialog-provider"
 
 describe("tui openai account helpers", () => {
   test("prefers email over opaque account identifiers", () => {
@@ -19,6 +19,7 @@ describe("tui openai account helpers", () => {
   })
 
   test("reports rate-limited and active account states", () => {
+    const now = Date.now()
     expect(
       openAIAccountStatus({
         id: "1",
@@ -27,7 +28,7 @@ describe("tui openai account helpers", () => {
         active: true,
         available: true,
       }),
-    ).toBe("Active")
+    ).toBe("Ready")
 
     expect(
       openAIAccountStatus({
@@ -36,8 +37,24 @@ describe("tui openai account helpers", () => {
         lastUsed: 1,
         active: false,
         available: false,
-        rateLimitedUntil: Date.now() + 1_000,
+        rateLimitedUntil: now + 1_000,
       }),
-    ).toBe("Rate limited")
+    ).toContain("Rate limited")
+
+    expect(openAIAccountLastUsed(now - 5_000, now)).toContain("last used")
+  })
+
+  test("builds a TUI summary for the active and next accounts", () => {
+    const summary = openAIStatusSummary({
+      activeAccountId: "a1",
+      nextAccountId: "a2",
+      accounts: [
+        { id: "a1", addedAt: 1, lastUsed: 1, active: true, available: true, email: "one@example.com" },
+        { id: "a2", addedAt: 1, lastUsed: 1, active: false, available: true, email: "two@example.com" },
+      ],
+    })
+
+    expect(summary.active).toBe("one@example.com")
+    expect(summary.next).toBe("two@example.com")
   })
 })

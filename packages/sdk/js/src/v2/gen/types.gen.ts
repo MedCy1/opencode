@@ -2018,6 +2018,14 @@ export type OpenAioAuthAccountsResult = {
   accounts: Array<OpenAioAuthAccountSummary>
 }
 
+export type OpenAioAuthStatusResult = {
+  activeAccountId?: string
+  nextAccountId?: string
+  nextWait?: number
+  nextWaitReason?: "rate_limit" | "cooldown"
+  accounts: Array<OpenAioAuthAccountSummary>
+}
+
 export type Symbol = {
   name: string
   kind: number
@@ -4561,6 +4569,26 @@ export type ProviderOpenaiOauthAccountListResponses = {
 
 export type ProviderOpenaiOauthAccountListResponse =
   ProviderOpenaiOauthAccountListResponses[keyof ProviderOpenaiOauthAccountListResponses]
+
+export type ProviderOpenaiOauthAccountStatusData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/openai/oauth/status"
+}
+
+export type ProviderOpenaiOauthAccountStatusResponses = {
+  /**
+   * OpenAI OAuth runtime status
+   */
+  200: OpenAioAuthStatusResult
+}
+
+export type ProviderOpenaiOauthAccountStatusResponse =
+  ProviderOpenaiOauthAccountStatusResponses[keyof ProviderOpenaiOauthAccountStatusResponses]
 
 export type ProviderOpenaiOauthAccountSelectData = {
   body?: {

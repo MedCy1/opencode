@@ -1,4 +1,4 @@
-import type { OpenAioAuthAccountsResult } from "@opencode-ai/sdk/v2/client"
+import type { OpenAioAuthStatusResult } from "@opencode-ai/sdk/v2/client"
 import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
@@ -6,14 +6,14 @@ import { Spinner } from "@opencode-ai/ui/spinner"
 import { showToast } from "@opencode-ai/ui/toast"
 import { createResource, For, Show } from "solid-js"
 import { useGlobalSDK } from "@/context/global-sdk"
-import { openAIAccountLabel, openAIAccountStatus } from "./openai-account-display"
+import { openAIAccountHealth, openAIAccountLabel, openAIAccountLastUsed, openAIStatusOverview } from "./openai-account-display"
 import { DialogConnectProvider } from "./dialog-connect-provider"
 
 export function DialogOpenAIAccounts() {
   const dialog = useDialog()
   const globalSDK = useGlobalSDK()
-  const [accounts, { refetch }] = createResource<OpenAioAuthAccountsResult>(async () => {
-    const result = await globalSDK.client.provider.openai.oauth.account.list(undefined, { throwOnError: true })
+  const [status, { refetch }] = createResource<OpenAioAuthStatusResult>(async () => {
+    const result = await globalSDK.client.provider.openai.oauth.account.status(undefined, { throwOnError: true })
     return result.data ?? { accounts: [] }
   })
 
@@ -31,7 +31,7 @@ export function DialogOpenAIAccounts() {
   async function remove(accountID: string) {
     await globalSDK.client.provider.openai.oauth.account.remove({ accountID }, { throwOnError: true })
     await refresh()
-    if ((accounts.latest?.accounts.length ?? 0) === 0) {
+    if ((status.latest?.accounts.length ?? 0) === 0) {
       dialog.close()
       showToast({ variant: "success", icon: "circle-check", title: "OpenAI account removed" })
       return
@@ -66,7 +66,7 @@ export function DialogOpenAIAccounts() {
         </div>
 
         <Show
-          when={!accounts.loading}
+          when={!status.loading}
           fallback={
             <div class="text-14-regular text-text-base flex items-center gap-2">
               <Spinner />
@@ -75,21 +75,59 @@ export function DialogOpenAIAccounts() {
           }
         >
           <Show
-            when={(accounts.latest?.accounts.length ?? 0) > 0}
+            when={(status.latest?.accounts.length ?? 0) > 0}
             fallback={
               <div class="text-14-regular text-text-base">
                 No ChatGPT OAuth accounts are stored for OpenAI yet. Add one to enable automatic rotation.
               </div>
             }
           >
-            <div class="flex flex-col border border-border-weak-base rounded-2xl overflow-hidden">
-              <For each={accounts.latest?.accounts ?? []}>
+            <div class="flex flex-col gap-3">
+              <div class="rounded-2xl border border-border-weak-base bg-surface-raised-base px-4 py-4">
+                <div class="text-12-medium uppercase tracking-[0.08em] text-text-weak">Rotation</div>
+                <div class="mt-3 flex flex-col gap-2 text-14-regular text-text-base">
+                  <Show when={status.latest}>{(data) => {
+                    const overview = () => openAIStatusOverview(data())
+                    return (
+                      <>
+                        <Show when={overview().active}>
+                          <div class="flex flex-wrap gap-x-2 gap-y-1">
+                            <span class="text-text-weak">Active</span>
+                            <span class="text-text-strong">{overview().active}</span>
+                            <Show when={overview().activeHealth}>
+                              <span class="text-text-weak">{overview().activeHealth}</span>
+                            </Show>
+                          </div>
+                        </Show>
+                        <Show when={overview().next}>
+                          <div class="flex flex-wrap gap-x-2 gap-y-1">
+                            <span class="text-text-weak">Next request</span>
+                            <span class="text-text-strong">{overview().next}</span>
+                          </div>
+                        </Show>
+                      </>
+                    )
+                  }}</Show>
+                </div>
+              </div>
+
+              <div class="flex flex-col border border-border-weak-base rounded-2xl overflow-hidden">
+              <For each={status.latest?.accounts ?? []}>
                 {(account, index) => (
                   <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-4 border-b border-border-weak-base last:border-b-0">
                     <div class="flex flex-col min-w-0 gap-1">
-                      <div class="text-14-medium text-text-strong truncate">{openAIAccountLabel(account, index())}</div>
+                      <div class="text-14-medium text-text-strong truncate flex flex-wrap items-center gap-2">
+                        <span>{openAIAccountLabel(account, index())}</span>
+                        <Show when={account.active}>
+                          <span class="text-11-medium uppercase tracking-[0.08em] text-text-weak">Active</span>
+                        </Show>
+                        <Show when={status.latest?.nextAccountId === account.id && !account.active}>
+                          <span class="text-11-medium uppercase tracking-[0.08em] text-text-weak">Next</span>
+                        </Show>
+                      </div>
                       <div class="text-12-regular text-text-weak flex flex-wrap gap-x-3 gap-y-1">
-                        <span>{openAIAccountStatus(account)}</span>
+                        <span>{openAIAccountHealth(account)}</span>
+                        <span>{openAIAccountLastUsed(account.lastUsed)}</span>
                         <Show when={account.accountId}>
                           <span class="font-mono">{account.accountId}</span>
                         </Show>
@@ -108,6 +146,7 @@ export function DialogOpenAIAccounts() {
                   </div>
                 )}
               </For>
+              </div>
             </div>
           </Show>
         </Show>

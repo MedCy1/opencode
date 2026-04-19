@@ -101,6 +101,7 @@ import type {
   ProviderOpenaiOauthAccountRemoveResponses,
   ProviderOpenaiOauthAccountSelectErrors,
   ProviderOpenaiOauthAccountSelectResponses,
+  ProviderOpenaiOauthAccountStatusResponses,
   PtyConnectErrors,
   PtyConnectResponses,
   PtyCreateErrors,
@@ -2975,6 +2976,36 @@ export class Account extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<ProviderOpenaiOauthAccountListResponses, unknown, ThrowOnError>({
       url: "/provider/openai/oauth/accounts",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get OpenAI OAuth status
+   *
+   * Get the active OpenAI OAuth account, next rotation candidate, wait state, and per-account health.
+   */
+  public status<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ProviderOpenaiOauthAccountStatusResponses, unknown, ThrowOnError>({
+      url: "/provider/openai/oauth/status",
       ...options,
       ...params,
     })

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { openAIAccountLabel, openAIAccountStatus } from "./openai-account-display"
+import { openAIAccountHealth, openAIAccountLabel, openAIAccountLastUsed, openAIStatusOverview, openAIWait } from "./openai-account-display"
 
 describe("dialog-openai-accounts helpers", () => {
   test("prefers email over opaque identifiers", () => {
@@ -34,27 +34,75 @@ describe("dialog-openai-accounts helpers", () => {
     ).toBe("Account 2")
   })
 
-  test("reports account availability states", () => {
+  test("formats waits and account availability states", () => {
+    const now = Date.now()
+    expect(openAIWait(65_000)).toBe("1m 5s")
+
     expect(
-      openAIAccountStatus({
+      openAIAccountHealth({
         id: "1",
         addedAt: 1,
         lastUsed: 1,
         active: true,
         available: true,
-      }),
-    ).toBe("Active")
+      }, now),
+    ).toBe("Ready")
 
     expect(
-      openAIAccountStatus({
+      openAIAccountHealth({
         id: "2",
         addedAt: 1,
         lastUsed: 1,
         active: false,
         available: false,
-        cooldownUntil: Date.now() + 1_000,
+        cooldownUntil: now + 1_000,
         cooldownReason: "network",
+      }, now),
+    ).toContain("Cooling down (network)")
+
+    expect(openAIAccountLastUsed(now - 5_000, now)).toContain("Last used")
+  })
+
+  test("builds a status overview for active and waiting states", () => {
+    const now = Date.now()
+    expect(
+      openAIStatusOverview(
+        {
+          activeAccountId: "a1",
+          nextAccountId: "a2",
+          accounts: [
+            { id: "a1", addedAt: 1, lastUsed: now - 5_000, active: true, available: true, email: "one@example.com" },
+            { id: "a2", addedAt: 1, lastUsed: now - 3_000, active: false, available: true, email: "two@example.com" },
+          ],
+        },
+        now,
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        active: "one@example.com",
+        next: "two@example.com",
       }),
-    ).toBe("Cooling down (network)")
+    )
+
+    expect(
+      openAIStatusOverview(
+        {
+          accounts: [],
+          nextWait: 65_000,
+          nextWaitReason: "rate_limit",
+        },
+        now,
+      ).next,
+    ).toContain("Waiting 1m 5s")
+    expect(
+      openAIStatusOverview(
+        {
+          accounts: [],
+          nextWait: 65_000,
+          nextWaitReason: "rate_limit",
+        },
+        now,
+      ).next,
+    ).toContain("rate limited")
   })
 })

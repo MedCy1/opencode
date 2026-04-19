@@ -213,6 +213,63 @@ describe("Auth", () => {
     ),
   )
 
+  it.live("summarizeOpenAIStatus reports the next ready account when rotation will switch", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const auth = yield* Auth.Service
+        yield* auth.remove("openai")
+        yield* auth.upsertOpenAIAccount({
+          refresh: "rt-1",
+          access: "at-1",
+          expires: 1,
+          accountId: "acc-1",
+          email: "one@example.com",
+        })
+        const current = yield* auth.upsertOpenAIAccount({
+          refresh: "rt-2",
+          access: "at-2",
+          expires: 2,
+          accountId: "acc-2",
+          email: "two@example.com",
+        })
+        const first = Auth.summarizeOpenAIAccounts(current).accounts.find((account) => account.accountId === "acc-1")
+        expect(first).toBeDefined()
+        const blocked = Auth.updateOpenAIAccount(current, first!.id, {
+          rateLimitedUntil: Date.now() + 10_000,
+        })
+        expect(blocked).toBeDefined()
+        const status = Auth.summarizeOpenAIStatus(blocked!)
+        expect(status.activeAccountId).toBe(blocked!.activeAccountId)
+        expect(status.nextAccountId).toBe(blocked!.activeAccountId)
+        expect(status.nextWait).toBeUndefined()
+      }),
+    ),
+  )
+
+  it.live("summarizeOpenAIStatus reports wait reason when all accounts are unavailable", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const auth = yield* Auth.Service
+        yield* auth.remove("openai")
+        const current = yield* auth.upsertOpenAIAccount({
+          refresh: "rt-1",
+          access: "at-1",
+          expires: 1,
+          accountId: "acc-1",
+          email: "one@example.com",
+        })
+        const blocked = Auth.updateOpenAIAccount(current, Auth.summarizeOpenAIAccounts(current).accounts[0]!.id, {
+          cooldownUntil: Date.now() + 20_000,
+        })
+        expect(blocked).toBeDefined()
+        const status = Auth.summarizeOpenAIStatus(blocked!)
+        expect(status.nextAccountId).toBeUndefined()
+        expect(status.nextWaitReason).toBe("cooldown")
+        expect(status.nextWait).toBeGreaterThan(0)
+      }),
+    ),
+  )
+
   it.live("derives OpenAI account email and accountId from stored access token", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {

@@ -179,6 +179,29 @@ export const ProviderRoutes = lazy(() =>
           return yield* auth.openaiAccounts()
         }),
     )
+    .get(
+      "/openai/oauth/status",
+      describeRoute({
+        summary: "Get OpenAI OAuth status",
+        description: "Get the active OpenAI OAuth account, next rotation candidate, wait state, and per-account health.",
+        operationId: "provider.openai.oauth.account.status",
+        responses: {
+          200: {
+            description: "OpenAI OAuth runtime status",
+            content: {
+              "application/json": {
+                schema: resolver(Auth.OpenAIStatusResult.zod),
+              },
+            },
+          },
+        },
+      }),
+      async (c) =>
+        jsonRequest("ProviderRoutes.openai.oauth.status", c, function* () {
+          const auth = yield* Auth.Service
+          return yield* auth.openaiStatus()
+        }),
+    )
     .post(
       "/openai/oauth/accounts/select",
       describeRoute({
