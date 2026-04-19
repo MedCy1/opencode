@@ -1687,6 +1687,25 @@ export type OAuth = {
   expires: number
   accountId?: string
   enterpriseUrl?: string
+  email?: string
+  multiAccount?: boolean
+  activeAccountId?: string
+  rotationCursor?: number
+  accounts?: Array<{
+    id: string
+    refresh: string
+    access: string
+    expires: number
+    accountId?: string
+    enterpriseUrl?: string
+    email?: string
+    label?: string
+    addedAt: number
+    lastUsed: number
+    rateLimitedUntil?: number
+    cooldownUntil?: number
+    cooldownReason?: string
+  }>
 }
 
 export type ApiAuth = {
@@ -1978,6 +1997,25 @@ export type ProviderAuthAuthorization = {
   url: string
   method: "auto" | "code"
   instructions: string
+}
+
+export type OpenAioAuthAccountSummary = {
+  id: string
+  accountId?: string
+  email?: string
+  label?: string
+  addedAt: number
+  lastUsed: number
+  active: boolean
+  available: boolean
+  rateLimitedUntil?: number
+  cooldownUntil?: number
+  cooldownReason?: string
+}
+
+export type OpenAioAuthAccountsResult = {
+  activeAccountId?: string
+  accounts: Array<OpenAioAuthAccountSummary>
 }
 
 export type Symbol = {
@@ -4503,6 +4541,96 @@ export type ProviderOauthCallbackResponses = {
 }
 
 export type ProviderOauthCallbackResponse = ProviderOauthCallbackResponses[keyof ProviderOauthCallbackResponses]
+
+export type ProviderOpenaiOauthAccountListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/openai/oauth/accounts"
+}
+
+export type ProviderOpenaiOauthAccountListResponses = {
+  /**
+   * OpenAI OAuth accounts
+   */
+  200: OpenAioAuthAccountsResult
+}
+
+export type ProviderOpenaiOauthAccountListResponse =
+  ProviderOpenaiOauthAccountListResponses[keyof ProviderOpenaiOauthAccountListResponses]
+
+export type ProviderOpenaiOauthAccountSelectData = {
+  body?: {
+    /**
+     * OpenAI account ID
+     */
+    accountID: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/openai/oauth/accounts/select"
+}
+
+export type ProviderOpenaiOauthAccountSelectErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderOpenaiOauthAccountSelectError =
+  ProviderOpenaiOauthAccountSelectErrors[keyof ProviderOpenaiOauthAccountSelectErrors]
+
+export type ProviderOpenaiOauthAccountSelectResponses = {
+  /**
+   * Account selected
+   */
+  200: boolean
+}
+
+export type ProviderOpenaiOauthAccountSelectResponse =
+  ProviderOpenaiOauthAccountSelectResponses[keyof ProviderOpenaiOauthAccountSelectResponses]
+
+export type ProviderOpenaiOauthAccountRemoveData = {
+  body?: never
+  path: {
+    /**
+     * OpenAI account ID
+     */
+    accountID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/provider/openai/oauth/accounts/{accountID}"
+}
+
+export type ProviderOpenaiOauthAccountRemoveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ProviderOpenaiOauthAccountRemoveError =
+  ProviderOpenaiOauthAccountRemoveErrors[keyof ProviderOpenaiOauthAccountRemoveErrors]
+
+export type ProviderOpenaiOauthAccountRemoveResponses = {
+  /**
+   * Account removed
+   */
+  200: boolean
+}
+
+export type ProviderOpenaiOauthAccountRemoveResponse =
+  ProviderOpenaiOauthAccountRemoveResponses[keyof ProviderOpenaiOauthAccountRemoveResponses]
 
 export type SyncStartData = {
   body?: never

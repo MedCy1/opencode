@@ -26,6 +26,47 @@ const put = (key: string, info: Auth.Info) =>
     }),
   )
 
+const putOpenAI = (input: Auth.OpenAIAccountInput) =>
+  AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const auth = yield* Auth.Service
+      return yield* auth.upsertOpenAIAccount(input)
+    }),
+  )
+
+const listOpenAI = () =>
+  AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const auth = yield* Auth.Service
+      return yield* auth.openaiAccounts()
+    }),
+  )
+
+const switchOpenAI = (accountID: string) =>
+  AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const auth = yield* Auth.Service
+      return yield* auth.selectOpenAIAccount(accountID)
+    }),
+  )
+
+const removeOpenAI = (accountID: string) =>
+  AppRuntime.runPromise(
+    Effect.gen(function* () {
+      const auth = yield* Auth.Service
+      return yield* auth.removeOpenAIAccount(accountID)
+    }),
+  )
+
+function formatOpenAIAccountLabel(input: {
+  account: Pick<Auth.OpenAIAccountSummary, "email" | "label" | "accountId" | "active">
+  index: number
+}) {
+  const detail = input.account.label ?? input.account.email ?? input.account.accountId ?? `Account ${input.index + 1}`
+  if (!input.account.active) return detail
+  return `${detail} ${UI.Style.TEXT_DIM}(active)`
+}
+
 async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, methodName?: string): Promise<boolean> {
   let index = 0
   if (methodName) {
@@ -101,6 +142,16 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, 
         const saveProvider = result.provider ?? provider
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extraFields } = result
+          if (saveProvider === "openai") {
+            await putOpenAI({
+              refresh,
+              access,
+              expires,
+              accountId: "accountId" in extraFields ? extraFields.accountId : undefined,
+              email: "email" in extraFields ? extraFields.email : undefined,
+              enterpriseUrl: "enterpriseUrl" in extraFields ? extraFields.enterpriseUrl : undefined,
+            })
+          } else {
           await put(saveProvider, {
             type: "oauth",
             refresh,
@@ -108,6 +159,7 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, 
             expires,
             ...extraFields,
           })
+          }
         }
         if ("key" in result) {
           await put(saveProvider, {
@@ -133,6 +185,16 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, 
         const saveProvider = result.provider ?? provider
         if ("refresh" in result) {
           const { type: _, provider: __, refresh, access, expires, ...extraFields } = result
+          if (saveProvider === "openai") {
+            await putOpenAI({
+              refresh,
+              access,
+              expires,
+              accountId: "accountId" in extraFields ? extraFields.accountId : undefined,
+              email: "email" in extraFields ? extraFields.email : undefined,
+              enterpriseUrl: "enterpriseUrl" in extraFields ? extraFields.enterpriseUrl : undefined,
+            })
+          } else {
           await put(saveProvider, {
             type: "oauth",
             refresh,
@@ -140,6 +202,7 @@ async function handlePluginAuth(plugin: { auth: PluginAuth }, provider: string, 
             expires,
             ...extraFields,
           })
+          }
         }
         if ("key" in result) {
           await put(saveProvider, {
@@ -215,7 +278,12 @@ export const ProvidersCommand = cmd({
   aliases: ["auth"],
   describe: "manage AI providers and credentials",
   builder: (yargs) =>
-    yargs.command(ProvidersListCommand).command(ProvidersLoginCommand).command(ProvidersLogoutCommand).demandCommand(),
+    yargs
+      .command(ProvidersListCommand)
+      .command(ProvidersLoginCommand)
+      .command(ProvidersLogoutCommand)
+      .command(ProvidersSwitchCommand)
+      .demandCommand(),
   async handler() {},
 })
 
@@ -236,13 +304,24 @@ export const ProvidersListCommand = cmd({
       }),
     )
     const database = await ModelsDev.get()
+    let count = 0
 
     for (const [providerID, result] of results) {
       const name = database[providerID]?.name || providerID
+      if (providerID === "openai" && result.type === "oauth") {
+        const summary = Auth.summarizeOpenAIAccounts(result)
+        count += summary.accounts.length || 1
+        prompts.log.info(`${name} ${UI.Style.TEXT_DIM}oauth (${summary.accounts.length} accounts)`)
+        summary.accounts.forEach((account, index) => {
+          prompts.log.message(`  ${formatOpenAIAccountLabel({ account, index })}`)
+        })
+        continue
+      }
+      count += 1
       prompts.log.info(`${name} ${UI.Style.TEXT_DIM}${result.type}`)
     }
 
-    prompts.outro(`${results.length} credentials`)
+    prompts.outro(`${count} credentials`)
 
     const activeEnvVars: Array<{ provider: string; envVar: string }> = []
 
@@ -498,19 +577,62 @@ export const ProvidersLogoutCommand = cmd({
     const database = await ModelsDev.get()
     const selected = await prompts.select({
       message: "Select provider",
-      options: credentials.map(([key, value]) => ({
-        label: (database[key]?.name || key) + UI.Style.TEXT_DIM + " (" + value.type + ")",
-        value: key,
+      options: credentials.flatMap(([key, value]) => {
+        if (key === "openai" && value.type === "oauth") {
+          const summary = Auth.summarizeOpenAIAccounts(value)
+          return summary.accounts.map((account, index) => ({
+            label: `${database[key]?.name || key} ${UI.Style.TEXT_DIM}(oauth) ${formatOpenAIAccountLabel({ account, index })}`,
+            value: `${key}:${account.id}`,
+          }))
+        }
+        return [
+          {
+            label: (database[key]?.name || key) + UI.Style.TEXT_DIM + " (" + value.type + ")",
+            value: key,
+          },
+        ]
+      }),
+    })
+    if (prompts.isCancel(selected)) throw new UI.CancelledError()
+    const value = selected as string
+    if (value.startsWith("openai:")) {
+      await removeOpenAI(value.slice("openai:".length))
+    } else {
+      await AppRuntime.runPromise(
+        Effect.gen(function* () {
+          const auth = yield* Auth.Service
+          yield* auth.remove(value)
+        }),
+      )
+    }
+    prompts.outro("Logout successful")
+  },
+})
+
+export const ProvidersSwitchCommand = cmd({
+  command: "switch",
+  describe: "switch the active OpenAI OAuth account",
+  async handler() {
+    UI.empty()
+    prompts.intro("Switch OpenAI account")
+    const summary = await listOpenAI()
+    if (summary.accounts.length === 0) {
+      prompts.log.error("No OpenAI OAuth accounts found")
+      return
+    }
+    if (summary.accounts.length === 1) {
+      prompts.log.info("Only one OpenAI OAuth account is configured")
+      return
+    }
+    const selected = await prompts.select({
+      message: "Select account",
+      options: summary.accounts.map((account, index) => ({
+        label: formatOpenAIAccountLabel({ account, index }),
+        value: account.id,
       })),
     })
     if (prompts.isCancel(selected)) throw new UI.CancelledError()
-    const providerID = selected as string
-    await AppRuntime.runPromise(
-      Effect.gen(function* () {
-        const auth = yield* Auth.Service
-        yield* auth.remove(providerID)
-      }),
-    )
-    prompts.outro("Logout successful")
+    await switchOpenAI(selected as string)
+    prompts.outro("Active account updated")
   },
 })

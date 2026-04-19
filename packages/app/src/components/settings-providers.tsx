@@ -9,6 +9,7 @@ import { useLanguage } from "@/context/language"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "@/context/global-sync"
 import { DialogConnectProvider } from "./dialog-connect-provider"
+import { DialogOpenAIAccounts } from "./dialog-openai-accounts"
 import { DialogSelectProvider } from "./dialog-select-provider"
 import { DialogCustomProvider } from "./dialog-custom-provider"
 import { SettingsList } from "./settings-list"
@@ -162,9 +163,24 @@ export const SettingsProviders: Component = () => {
                         </span>
                       }
                     >
-                      <Button size="large" variant="ghost" onClick={() => void disconnect(item.id, item.name)}>
-                        {language.t("common.disconnect")}
-                      </Button>
+                      <Show
+                        when={item.id === "openai" && source(item) !== "env"}
+                        fallback={
+                          <Button size="large" variant="ghost" onClick={() => void disconnect(item.id, item.name)}>
+                            {language.t("common.disconnect")}
+                          </Button>
+                        }
+                      >
+                        <Button
+                          size="large"
+                          variant="ghost"
+                          onClick={() => {
+                            dialog.show(() => <DialogOpenAIAccounts />)
+                          }}
+                        >
+                          Manage
+                        </Button>
+                      </Show>
                     </Show>
                   </div>
                 )}

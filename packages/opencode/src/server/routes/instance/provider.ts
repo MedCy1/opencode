@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
+import { Auth } from "@/auth"
 import { Config } from "@/config"
 import { Provider } from "@/provider"
 import { ModelsDev } from "@/provider"
@@ -152,6 +153,91 @@ export const ProviderRoutes = lazy(() =>
             method,
             code,
           })
+          return true
+        }),
+    )
+    .get(
+      "/openai/oauth/accounts",
+      describeRoute({
+        summary: "List OpenAI OAuth accounts",
+        description: "List configured OpenAI OAuth accounts and the active account.",
+        operationId: "provider.openai.oauth.account.list",
+        responses: {
+          200: {
+            description: "OpenAI OAuth accounts",
+            content: {
+              "application/json": {
+                schema: resolver(Auth.OpenAIAccountsResult.zod),
+              },
+            },
+          },
+        },
+      }),
+      async (c) =>
+        jsonRequest("ProviderRoutes.openai.oauth.accounts", c, function* () {
+          const auth = yield* Auth.Service
+          return yield* auth.openaiAccounts()
+        }),
+    )
+    .post(
+      "/openai/oauth/accounts/select",
+      describeRoute({
+        summary: "Select OpenAI OAuth account",
+        description: "Set the active OpenAI OAuth account used for Codex requests.",
+        operationId: "provider.openai.oauth.account.select",
+        responses: {
+          200: {
+            description: "Account selected",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          accountID: z.string().meta({ description: "OpenAI account ID" }),
+        }),
+      ),
+      async (c) =>
+        jsonRequest("ProviderRoutes.openai.oauth.accounts.select", c, function* () {
+          const auth = yield* Auth.Service
+          yield* auth.selectOpenAIAccount(c.req.valid("json").accountID)
+          return true
+        }),
+    )
+    .delete(
+      "/openai/oauth/accounts/:accountID",
+      describeRoute({
+        summary: "Remove OpenAI OAuth account",
+        description: "Remove a stored OpenAI OAuth account from the local account pool.",
+        operationId: "provider.openai.oauth.account.remove",
+        responses: {
+          200: {
+            description: "Account removed",
+            content: {
+              "application/json": {
+                schema: resolver(z.boolean()),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          accountID: z.string().meta({ description: "OpenAI account ID" }),
+        }),
+      ),
+      async (c) =>
+        jsonRequest("ProviderRoutes.openai.oauth.accounts.remove", c, function* () {
+          const auth = yield* Auth.Service
+          yield* auth.removeOpenAIAccount(c.req.valid("param").accountID)
           return true
         }),
     ),

@@ -96,6 +96,11 @@ import type {
   ProviderOauthAuthorizeResponses,
   ProviderOauthCallbackErrors,
   ProviderOauthCallbackResponses,
+  ProviderOpenaiOauthAccountListResponses,
+  ProviderOpenaiOauthAccountRemoveErrors,
+  ProviderOpenaiOauthAccountRemoveResponses,
+  ProviderOpenaiOauthAccountSelectErrors,
+  ProviderOpenaiOauthAccountSelectResponses,
   PtyConnectErrors,
   PtyConnectResponses,
   PtyCreateErrors,
@@ -2944,6 +2949,129 @@ export class Oauth extends HeyApiClient {
   }
 }
 
+export class Account extends HeyApiClient {
+  /**
+   * List OpenAI OAuth accounts
+   *
+   * List configured OpenAI OAuth accounts and the active account.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ProviderOpenaiOauthAccountListResponses, unknown, ThrowOnError>({
+      url: "/provider/openai/oauth/accounts",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Select OpenAI OAuth account
+   *
+   * Set the active OpenAI OAuth account used for Codex requests.
+   */
+  public select<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      accountID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "accountID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ProviderOpenaiOauthAccountSelectResponses,
+      ProviderOpenaiOauthAccountSelectErrors,
+      ThrowOnError
+    >({
+      url: "/provider/openai/oauth/accounts/select",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Remove OpenAI OAuth account
+   *
+   * Remove a stored OpenAI OAuth account from the local account pool.
+   */
+  public remove<ThrowOnError extends boolean = false>(
+    parameters: {
+      accountID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "accountID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<
+      ProviderOpenaiOauthAccountRemoveResponses,
+      ProviderOpenaiOauthAccountRemoveErrors,
+      ThrowOnError
+    >({
+      url: "/provider/openai/oauth/accounts/{accountID}",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Oauth2 extends HeyApiClient {
+  private _account?: Account
+  get account(): Account {
+    return (this._account ??= new Account({ client: this.client }))
+  }
+}
+
+export class Openai extends HeyApiClient {
+  private _oauth?: Oauth2
+  get oauth(): Oauth2 {
+    return (this._oauth ??= new Oauth2({ client: this.client }))
+  }
+}
+
 export class Provider extends HeyApiClient {
   /**
    * List providers
@@ -3008,6 +3136,11 @@ export class Provider extends HeyApiClient {
   private _oauth?: Oauth
   get oauth(): Oauth {
     return (this._oauth ??= new Oauth({ client: this.client }))
+  }
+
+  private _openai?: Openai
+  get openai(): Openai {
+    return (this._openai ??= new Openai({ client: this.client }))
   }
 }
 

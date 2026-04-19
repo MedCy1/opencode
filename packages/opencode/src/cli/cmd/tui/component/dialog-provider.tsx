@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onMount, Show } from "solid-js"
+import { createMemo, createResource, createSignal, onMount, Show } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { map, pipe, sortBy } from "remeda"
 import { DialogSelect } from "@tui/ui/dialog-select"
@@ -8,7 +8,7 @@ import { DialogPrompt } from "../ui/dialog-prompt"
 import { Link } from "../ui/link"
 import { useTheme } from "../context/theme"
 import { TextAttributes } from "@opentui/core"
-import type { ProviderAuthAuthorization, ProviderAuthMethod } from "@opencode-ai/sdk/v2"
+import type { OpenAioAuthAccountSummary, ProviderAuthAuthorization, ProviderAuthMethod } from "@opencode-ai/sdk/v2"
 import { DialogModel } from "./dialog-model"
 import { useKeyboard } from "@opentui/solid"
 import * as Clipboard from "@tui/util/clipboard"
@@ -24,12 +24,184 @@ const PROVIDER_PRIORITY: Record<string, number> = {
   google: 5,
 }
 
+type MethodOption = {
+  method: ProviderAuthMethod
+  index: number
+}
+
+function openAIAccountLabel(account: Pick<OpenAioAuthAccountSummary, "label" | "email" | "accountId">, index: number) {
+  return account.label ?? account.email ?? account.accountId ?? `Account ${index + 1}`
+}
+
+function openAIAccountStatus(account: OpenAioAuthAccountSummary) {
+  if (account.active) return "Active"
+  if (account.available) return "Ready"
+  if (account.rateLimitedUntil) return "Rate limited"
+  if (account.cooldownUntil) return account.cooldownReason ? `Cooling down (${account.cooldownReason})` : "Cooling down"
+  return "Unavailable"
+}
+
 export function createDialogProviderOptions() {
   const sync = useSync()
   const dialog = useDialog()
   const sdk = useSDK()
   const toast = useToast()
   const { theme } = useTheme()
+
+  async function refreshProviders() {
+    await sdk.client.instance.dispose()
+    await sync.bootstrap({ fatal: false }).catch(toast.error)
+  }
+
+  async function runMethod(providerID: string, entry: MethodOption) {
+    const method = entry.method
+    if (method.type === "oauth") {
+      let inputs: Record<string, string> | undefined
+      if (method.prompts?.length) {
+        const value = await PromptsMethod({
+          dialog,
+          prompts: method.prompts,
+        })
+        if (!value) return
+        inputs = value
+      }
+
+      const result = await sdk.client.provider.oauth.authorize({
+        providerID,
+        method: entry.index,
+        inputs,
+      })
+      if (result.error) {
+        toast.show({
+          variant: "error",
+          message: JSON.stringify(result.error),
+        })
+        dialog.clear()
+        return
+      }
+      if (result.data?.method === "code") {
+        dialog.replace(() => (
+          <CodeMethod providerID={providerID} title={method.label} index={entry.index} authorization={result.data!} />
+        ))
+      }
+      if (result.data?.method === "auto") {
+        dialog.replace(() => (
+          <AutoMethod providerID={providerID} title={method.label} index={entry.index} authorization={result.data!} />
+        ))
+      }
+      return
+    }
+
+    let metadata: Record<string, string> | undefined
+    if (method.prompts?.length) {
+      const value = await PromptsMethod({ dialog, prompts: method.prompts })
+      if (!value) return
+      metadata = value
+    }
+    dialog.replace(() => <ApiMethod providerID={providerID} title={method.label} metadata={metadata} />)
+  }
+
+  async function chooseMethod(providerID: string, methods: MethodOption[], title = "Select auth method") {
+    const selected = methods.length > 1
+      ? await new Promise<MethodOption | null>((resolve) => {
+          dialog.replace(
+            () => (
+              <DialogSelect
+                title={title}
+                options={methods.map((entry) => ({
+                  title: entry.method.label,
+                  value: entry,
+                }))}
+                onSelect={(option) => resolve(option.value)}
+              />
+            ),
+            () => resolve(null),
+          )
+        })
+      : methods[0]
+    if (!selected) return
+    await runMethod(providerID, selected)
+  }
+
+  async function openOpenAIManager(methods: MethodOption[]) {
+    const oauthMethods = methods.filter((entry) => entry.method.type === "oauth")
+    dialog.replace(() => (
+      <DialogOpenAIAccounts
+        oauthMethods={oauthMethods}
+        onAddAccount={() => chooseMethod("openai", oauthMethods, "Choose ChatGPT auth method")}
+      />
+    ))
+  }
+
+  async function openOpenAIOptions(methods: MethodOption[]) {
+    const accounts = await sdk.client.provider.openai.oauth.account
+      .list({}, { throwOnError: true })
+      .then((x) => x.data)
+      .catch(() => ({ accounts: [] }))
+    const oauthMethods = methods.filter((entry) => entry.method.type === "oauth")
+    const apiMethods = methods.filter((entry) => entry.method.type === "api")
+    const activeAccount = accounts.accounts.find((account) => account.active) ?? accounts.accounts[0]
+    const activeIndex = activeAccount ? accounts.accounts.findIndex((account) => account.id === activeAccount.id) : 0
+    dialog.replace(() => (
+      <DialogSelect
+        title="OpenAI"
+        options={[
+          ...(oauthMethods.length
+            ? [
+                {
+                  title: accounts?.accounts.length ? "Add ChatGPT account" : "Connect ChatGPT account",
+                  value: "oauth",
+                  description: accounts?.accounts.length ? `${accounts.accounts.length} saved account(s)` : "ChatGPT Plus/Pro",
+                  onSelect: () => {
+                    void chooseMethod("openai", oauthMethods, "Choose ChatGPT auth method")
+                  },
+                },
+              ]
+            : []),
+          ...(apiMethods.length
+            ? [
+                {
+                  title: "Use API key",
+                  value: "api",
+                  description: "OpenAI Platform key",
+                  onSelect: () => {
+                    void chooseMethod("openai", apiMethods, "Choose API key method")
+                  },
+                },
+              ]
+            : []),
+          ...(accounts?.accounts.length
+            ? [
+                {
+                  title: "Manage ChatGPT accounts",
+                  value: "manage",
+                  description: activeAccount ? openAIAccountLabel(activeAccount, activeIndex >= 0 ? activeIndex : 0) : undefined,
+                  onSelect: () => {
+                    void openOpenAIManager(methods)
+                  },
+                },
+              ]
+            : []),
+          {
+            title: "Disconnect OpenAI",
+            value: "disconnect",
+            description: "Remove all OpenAI credentials",
+            onSelect: () => {
+              void sdk.client.auth
+                .remove({ providerID: "openai" }, { throwOnError: true })
+                .then(refreshProviders)
+                .then(() => {
+                  toast.show({ message: "OpenAI disconnected", variant: "success" })
+                  dialog.clear()
+                })
+                .catch(toast.error)
+            },
+          },
+        ]}
+      />
+    ))
+  }
+
   const options = createMemo(() => {
     return pipe(
       sync.data.provider_next.all,
@@ -53,88 +225,17 @@ export function createDialogProviderOptions() {
           async onSelect() {
             if (consoleManaged) return
 
-            const methods = sync.data.provider_auth[provider.id] ?? [
+            const methods = (sync.data.provider_auth[provider.id] ?? [
               {
                 type: "api",
                 label: "API key",
               },
-            ]
-            let index: number | null = 0
-            if (methods.length > 1) {
-              index = await new Promise<number | null>((resolve) => {
-                dialog.replace(
-                  () => (
-                    <DialogSelect
-                      title="Select auth method"
-                      options={methods.map((x, index) => ({
-                        title: x.label,
-                        value: index,
-                      }))}
-                      onSelect={(option) => resolve(option.value)}
-                    />
-                  ),
-                  () => resolve(null),
-                )
-              })
+            ]).map((method, index) => ({ method, index }))
+            if (provider.id === "openai") {
+              await openOpenAIOptions(methods)
+              return
             }
-            if (index == null) return
-            const method = methods[index]
-            if (method.type === "oauth") {
-              let inputs: Record<string, string> | undefined
-              if (method.prompts?.length) {
-                const value = await PromptsMethod({
-                  dialog,
-                  prompts: method.prompts,
-                })
-                if (!value) return
-                inputs = value
-              }
-
-              const result = await sdk.client.provider.oauth.authorize({
-                providerID: provider.id,
-                method: index,
-                inputs,
-              })
-              if (result.error) {
-                toast.show({
-                  variant: "error",
-                  message: JSON.stringify(result.error),
-                })
-                dialog.clear()
-                return
-              }
-              if (result.data?.method === "code") {
-                dialog.replace(() => (
-                  <CodeMethod
-                    providerID={provider.id}
-                    title={method.label}
-                    index={index}
-                    authorization={result.data!}
-                  />
-                ))
-              }
-              if (result.data?.method === "auto") {
-                dialog.replace(() => (
-                  <AutoMethod
-                    providerID={provider.id}
-                    title={method.label}
-                    index={index}
-                    authorization={result.data!}
-                  />
-                ))
-              }
-            }
-            if (method.type === "api") {
-              let metadata: Record<string, string> | undefined
-              if (method.prompts?.length) {
-                const value = await PromptsMethod({ dialog, prompts: method.prompts })
-                if (!value) return
-                metadata = value
-              }
-              return dialog.replace(() => (
-                <ApiMethod providerID={provider.id} title={method.label} metadata={metadata} />
-              ))
-            }
+            await chooseMethod(provider.id, methods)
           },
         }
       }),
@@ -146,6 +247,144 @@ export function createDialogProviderOptions() {
 export function DialogProvider() {
   const options = createDialogProviderOptions()
   return <DialogSelect title="Connect a provider" options={options()} />
+}
+
+function DialogOpenAIAccounts(props: { oauthMethods: MethodOption[]; onAddAccount: () => Promise<void> }) {
+  const sdk = useSDK()
+  const dialog = useDialog()
+  const sync = useSync()
+  const toast = useToast()
+  const { theme } = useTheme()
+
+  async function refreshProviders() {
+    await sdk.client.instance.dispose()
+    await sync.bootstrap({ fatal: false }).catch(toast.error)
+  }
+
+  const [accounts, { refetch }] = createResource(async () => {
+    const result = await sdk.client.provider.openai.oauth.account.list({}, { throwOnError: true })
+    return result.data ?? { accounts: [] }
+  })
+
+  function reopen() {
+    dialog.replace(() => <DialogOpenAIAccounts oauthMethods={props.oauthMethods} onAddAccount={props.onAddAccount} />)
+  }
+
+  const options = createMemo(() => {
+    if (!accounts.latest) {
+      return [
+        {
+          title: "Loading accounts...",
+          value: "loading",
+          onSelect: () => {},
+        },
+      ]
+    }
+
+    return [
+      ...(props.oauthMethods.length
+        ? [
+            {
+              title: "Add ChatGPT account",
+              value: "add",
+              category: "Manage",
+              onSelect: () => {
+                void props.onAddAccount()
+              },
+            },
+          ]
+        : []),
+      {
+        title: "Disconnect OpenAI",
+        value: "disconnect",
+        category: "Manage",
+        onSelect: () => {
+          void sdk.client.auth
+            .remove({ providerID: "openai" }, { throwOnError: true })
+            .then(refreshProviders)
+            .then(() => {
+              toast.show({ message: "OpenAI disconnected", variant: "success" })
+              dialog.clear()
+            })
+            .catch(toast.error)
+        },
+      },
+      ...accounts.latest.accounts.map((account, index) => ({
+        title: openAIAccountLabel(account, index),
+        value: account,
+        category: "Accounts",
+        description: openAIAccountStatus(account),
+        footer: account.accountId,
+        gutter: account.active ? <text fg={theme.success}>✓</text> : undefined,
+        onSelect: () => {
+          dialog.replace(() => (
+            <DialogOpenAIAccount
+              account={account}
+              onBack={reopen}
+              onChange={async () => {
+                await refreshProviders()
+                await refetch()
+                reopen()
+              }}
+            />
+          ))
+        },
+      })),
+    ]
+  })
+
+  return <DialogSelect<string | OpenAioAuthAccountSummary> title="Manage OpenAI accounts" options={options()} />
+}
+
+function DialogOpenAIAccount(props: {
+  account: OpenAioAuthAccountSummary
+  onBack: () => void
+  onChange: () => Promise<void>
+}) {
+  const sdk = useSDK()
+  const toast = useToast()
+
+  const options = createMemo(() => [
+    ...(!props.account.active
+      ? [
+          {
+            title: "Make active",
+            value: "activate",
+            description: "Use this account for new Codex requests",
+            onSelect: () => {
+              void sdk.client.provider.openai.oauth.account
+                .select({ accountID: props.account.id }, { throwOnError: true })
+                .then(props.onChange)
+                .then(() => {
+                  toast.show({ message: "Active OpenAI account updated", variant: "success" })
+                })
+                .catch(toast.error)
+            },
+          },
+        ]
+      : []),
+    {
+      title: "Remove account",
+      value: "remove",
+      description: props.account.email ?? props.account.accountId ?? "Stored ChatGPT account",
+      onSelect: () => {
+        void sdk.client.provider.openai.oauth.account
+          .remove({ accountID: props.account.id }, { throwOnError: true })
+          .then(props.onChange)
+          .then(() => {
+            toast.show({ message: "OpenAI account removed", variant: "success" })
+          })
+          .catch(toast.error)
+      },
+    },
+    {
+      title: "Back",
+      value: "back",
+      onSelect: props.onBack,
+    },
+  ])
+
+  return <DialogSelect title={openAIAccountLabel(props.account, 0)} options={options()} />
 }
 
 interface AutoMethodProps {

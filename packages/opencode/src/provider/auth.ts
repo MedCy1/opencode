@@ -212,6 +212,17 @@ export const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> =
 
       if ("refresh" in result) {
         const { type: _, provider: __, refresh, access, expires, ...extra } = result
+        if (input.providerID === ProviderID.openai) {
+          yield* auth.upsertOpenAIAccount({
+            refresh,
+            access,
+            expires,
+            accountId: "accountId" in extra ? extra.accountId : undefined,
+            email: "email" in extra ? extra.email : undefined,
+            enterpriseUrl: "enterpriseUrl" in extra ? extra.enterpriseUrl : undefined,
+          })
+          return
+        }
         yield* auth.set(input.providerID, {
           type: "oauth",
           access,

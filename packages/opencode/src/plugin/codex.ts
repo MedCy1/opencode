@@ -2,7 +2,7 @@ import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import { Log } from "../util"
 import { Installation } from "../installation"
 import { InstallationVersion } from "../installation/version"
-import { OAUTH_DUMMY_KEY } from "../auth"
+import { nextOpenAIAccount, normalizeOpenAIOauth, OAUTH_DUMMY_KEY, updateOpenAIAccount, type Oauth } from "../auth"
 import os from "os"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createServer } from "http"
@@ -14,6 +14,10 @@ const ISSUER = "https://auth.openai.com"
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 const OAUTH_PORT = 1455
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3000
+const RATE_LIMIT_FALLBACK_MS = 60_000
+const AUTH_COOLDOWN_MS = 60_000
+const SERVER_COOLDOWN_MS = 20_000
+const NETWORK_COOLDOWN_MS = 10_000
 
 interface PkceCodes {
   verifier: string
@@ -53,6 +57,7 @@ export interface IdTokenClaims {
   email?: string
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string
+    email?: string
   }
 }
 
@@ -85,6 +90,161 @@ export function extractAccountId(tokens: TokenResponse): string | undefined {
     return claims ? extractAccountIdFromClaims(claims) : undefined
   }
   return undefined
+}
+
+export function extractEmailFromClaims(claims: IdTokenClaims): string | undefined {
+  return claims.email || claims["https://api.openai.com/auth"]?.email
+}
+
+export function extractEmail(tokens: TokenResponse): string | undefined {
+  if (tokens.id_token) {
+    const claims = parseJwtClaims(tokens.id_token)
+    const email = claims && extractEmailFromClaims(claims)
+    if (email) return email
+  }
+  if (tokens.access_token) {
+    const claims = parseJwtClaims(tokens.access_token)
+    return claims ? extractEmailFromClaims(claims) : undefined
+  }
+  return undefined
+}
+
+function stripAuthorization(headers?: RequestInit["headers"]) {
+  if (!headers) return
+  if (headers instanceof Headers) {
+    headers.delete("authorization")
+    headers.delete("Authorization")
+    return
+  }
+  if (Array.isArray(headers)) {
+    return headers.filter(([key]) => key.toLowerCase() !== "authorization")
+  }
+  delete headers["authorization"]
+  delete headers["Authorization"]
+  return headers
+}
+
+async function normalizeRequest(requestInput: RequestInfo | URL, init?: RequestInit) {
+  if (!(requestInput instanceof Request)) {
+    return { requestInput, init }
+  }
+  if (init) return { requestInput, init }
+  const method = requestInput.method || "GET"
+  const nextInit: RequestInit = {
+    method,
+    headers: new Headers(requestInput.headers),
+    signal: requestInput.signal,
+  }
+  if (method === "GET" || method === "HEAD") return { requestInput: requestInput.url, init: nextInit }
+  const body = await requestInput.clone().text()
+  if (body) nextInit.body = body
+  return { requestInput: requestInput.url, init: nextInit }
+}
+
+function requestHeaders(init?: RequestInit) {
+  const headers = new Headers()
+  if (!init?.headers) return headers
+  if (init.headers instanceof Headers) {
+    init.headers.forEach((value, key) => headers.set(key, value))
+    return headers
+  }
+  if (Array.isArray(init.headers)) {
+    for (const [key, value] of init.headers) {
+      if (value !== undefined) headers.set(key, String(value))
+    }
+    return headers
+  }
+  for (const [key, value] of Object.entries(init.headers)) {
+    if (value !== undefined) headers.set(key, String(value))
+  }
+  return headers
+}
+
+function rewriteCodexUrl(requestInput: RequestInfo | URL) {
+  const parsed =
+    requestInput instanceof URL
+      ? requestInput
+      : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
+  if (!parsed.pathname.includes("/v1/responses") && !parsed.pathname.includes("/chat/completions")) return parsed
+  return new URL(CODEX_API_ENDPOINT)
+}
+
+async function responseText(response: Response) {
+  try {
+    return await response.clone().text()
+  } catch {
+    return ""
+  }
+}
+
+function errorCode(body: string) {
+  if (!body) return
+  try {
+    const parsed = JSON.parse(body) as { error?: { code?: unknown; type?: unknown } }
+    const code = parsed.error?.code
+    if (typeof code === "string") return code
+    const type = parsed.error?.type
+    if (typeof type === "string") return type
+  } catch {}
+}
+
+function parseRetryAfter(response: Response, body: string) {
+  const retryAfterMs = response.headers.get("retry-after-ms")
+  if (retryAfterMs) {
+    const parsed = Number.parseInt(retryAfterMs, 10)
+    if (!Number.isNaN(parsed) && parsed > 0) return parsed
+  }
+
+  const retryAfter = response.headers.get("retry-after")
+  if (retryAfter) {
+    const parsedSeconds = Number.parseFloat(retryAfter)
+    if (!Number.isNaN(parsedSeconds) && parsedSeconds > 0) return Math.ceil(parsedSeconds * 1000)
+    const parsedDate = Date.parse(retryAfter) - Date.now()
+    if (!Number.isNaN(parsedDate) && parsedDate > 0) return Math.ceil(parsedDate)
+  }
+
+  if (body) {
+    try {
+      const parsed = JSON.parse(body) as { error?: { retry_after_ms?: unknown; retry_after?: unknown; resets_at?: unknown } }
+      const retryAfterMsBody = parsed.error?.retry_after_ms
+      if (typeof retryAfterMsBody === "number" && retryAfterMsBody > 0) return retryAfterMsBody
+      if (typeof retryAfterMsBody === "string") {
+        const numeric = Number.parseInt(retryAfterMsBody, 10)
+        if (!Number.isNaN(numeric) && numeric > 0) return numeric
+      }
+      const retryAfterBody = parsed.error?.retry_after
+      if (typeof retryAfterBody === "number" && retryAfterBody > 0) return Math.ceil(retryAfterBody * 1000)
+      if (typeof retryAfterBody === "string") {
+        const numeric = Number.parseFloat(retryAfterBody)
+        if (!Number.isNaN(numeric) && numeric > 0) return Math.ceil(numeric * 1000)
+      }
+      const resetAt = parsed.error?.resets_at
+      if (typeof resetAt === "number" && resetAt > 0) {
+        const delta = (resetAt < 10_000_000_000 ? resetAt * 1000 : resetAt) - Date.now()
+        if (delta > 0) return Math.ceil(delta)
+      }
+    } catch {}
+  }
+
+  return RATE_LIMIT_FALLBACK_MS
+}
+
+function rateLimited(response: Response, body: string) {
+  if (response.status === 429) return true
+  const code = errorCode(body)?.toLowerCase()
+  if (!code) return false
+  return code.includes("rate_limit") || code.includes("usage_limit") || code.includes("too_many_requests")
+}
+
+function shouldRotateAuth(response: Response) {
+  return response.status === 401 || response.status === 403
+}
+
+async function persistOpenAIAuth(input: PluginInput, auth: Oauth) {
+  await input.client.auth.set({
+    path: { id: "openai" },
+    body: auth,
+  })
 }
 
 function buildAuthorizeUrl(redirectUri: string, pkce: PkceCodes, state: string): string {
@@ -393,82 +553,155 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
         return {
           apiKey: OAUTH_DUMMY_KEY,
           async fetch(requestInput: RequestInfo | URL, init?: RequestInit) {
-            // Remove dummy API key authorization header
-            if (init?.headers) {
-              if (init.headers instanceof Headers) {
-                init.headers.delete("authorization")
-                init.headers.delete("Authorization")
-              } else if (Array.isArray(init.headers)) {
-                init.headers = init.headers.filter(([key]) => key.toLowerCase() !== "authorization")
-              } else {
-                delete init.headers["authorization"]
-                delete init.headers["Authorization"]
-              }
-            }
+            const normalized = await normalizeRequest(requestInput, init)
+            const nextInit = normalized.init ? { ...normalized.init } : undefined
+            const stripped = stripAuthorization(nextInit?.headers)
+            if (nextInit && stripped) nextInit.headers = stripped
 
             const currentAuth = await getAuth()
-            if (currentAuth.type !== "oauth") return fetch(requestInput, init)
+            if (currentAuth.type !== "oauth") return fetch(normalized.requestInput, nextInit)
 
-            // Cast to include accountId field
-            const authWithAccount = currentAuth as typeof currentAuth & { accountId?: string }
+            let authState = normalizeOpenAIOauth(currentAuth as Oauth)
+            let persisted = authState
+            let lastFailure: Response | undefined
 
-            // Check if token needs refresh
-            if (!currentAuth.access || currentAuth.expires < Date.now()) {
-              log.info("refreshing codex access token")
-              const tokens = await refreshAccessToken(currentAuth.refresh)
-              const newAccountId = extractAccountId(tokens) || authWithAccount.accountId
-              await input.client.auth.set({
-                path: { id: "openai" },
-                body: {
-                  type: "oauth",
-                  refresh: tokens.refresh_token,
-                  access: tokens.access_token,
-                  expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
-                  ...(newAccountId && { accountId: newAccountId }),
-                },
-              })
-              currentAuth.access = tokens.access_token
-              authWithAccount.accountId = newAccountId
-            }
+            while (true) {
+              const selection = nextOpenAIAccount(authState)
+              authState = selection.auth
 
-            // Build headers
-            const headers = new Headers()
-            if (init?.headers) {
-              if (init.headers instanceof Headers) {
-                init.headers.forEach((value, key) => headers.set(key, value))
-              } else if (Array.isArray(init.headers)) {
-                for (const [key, value] of init.headers) {
-                  if (value !== undefined) headers.set(key, String(value))
+              if (!selection.account) {
+                if (selection.rateLimitWait > 0) {
+                  log.info("all codex accounts rate-limited", {
+                    wait: selection.rateLimitWait,
+                    count: authState.accounts?.length ?? 0,
+                  })
+                  await sleep(selection.rateLimitWait, undefined, nextInit?.signal ? { signal: nextInit.signal } : undefined)
+                  continue
                 }
-              } else {
-                for (const [key, value] of Object.entries(init.headers)) {
-                  if (value !== undefined) headers.set(key, String(value))
+                if (lastFailure) return lastFailure
+                return new Response(
+                  JSON.stringify({
+                    error: {
+                      message: "All ChatGPT OAuth accounts are temporarily unavailable. Run `opencode auth login` or `opencode auth switch`.",
+                    },
+                  }),
+                  {
+                    status: 503,
+                    headers: { "Content-Type": "application/json" },
+                  },
+                )
+              }
+
+              let account = selection.account
+
+              if (!account.access || account.expires <= Date.now()) {
+                try {
+                  log.info("refreshing codex access token", { accountID: account.id })
+                  const tokens = await refreshAccessToken(account.refresh)
+                  authState = updateOpenAIAccount(authState, account.id, {
+                    refresh: tokens.refresh_token,
+                    access: tokens.access_token,
+                    expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
+                    accountId: extractAccountId(tokens) || account.accountId,
+                    email: extractEmail(tokens) || account.email,
+                    lastUsed: Date.now(),
+                    rateLimitedUntil: null,
+                    cooldownUntil: null,
+                    cooldownReason: null,
+                  })!
+                  await persistOpenAIAuth(input, authState)
+                  persisted = authState
+                  account = authState.accounts!.find((item) => item.id === account.id)!
+                } catch (error) {
+                  log.warn("codex account refresh failed", {
+                    accountID: account.id,
+                    error: error instanceof Error ? error.message : String(error),
+                  })
+                  authState = updateOpenAIAccount(authState, account.id, {
+                    cooldownUntil: Date.now() + AUTH_COOLDOWN_MS,
+                    cooldownReason: "auth",
+                    lastUsed: Date.now(),
+                  })!
+                  await persistOpenAIAuth(input, authState)
+                  persisted = authState
+                  continue
                 }
               }
+
+              const headers = requestHeaders(nextInit)
+              headers.set("authorization", `Bearer ${account.access}`)
+              if (account.accountId) headers.set("ChatGPT-Account-Id", account.accountId)
+
+              const url = rewriteCodexUrl(normalized.requestInput)
+
+              let response: Response
+              try {
+                response = await fetch(url, {
+                  ...nextInit,
+                  headers,
+                })
+              } catch (error) {
+                if (nextInit?.signal?.aborted) throw error
+                log.warn("codex account network failure", {
+                  accountID: account.id,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+                authState = updateOpenAIAccount(authState, account.id, {
+                  cooldownUntil: Date.now() + NETWORK_COOLDOWN_MS,
+                  cooldownReason: "network",
+                  lastUsed: Date.now(),
+                })!
+                await persistOpenAIAuth(input, authState)
+                persisted = authState
+                continue
+              }
+
+              if (response.ok) {
+                if (authState.activeAccountId !== persisted.activeAccountId) {
+                  await persistOpenAIAuth(input, authState)
+                }
+                return response
+              }
+
+              const body = await responseText(response)
+              lastFailure = response
+
+              if (rateLimited(response, body)) {
+                authState = updateOpenAIAccount(authState, account.id, {
+                  rateLimitedUntil: Date.now() + parseRetryAfter(response, body),
+                  cooldownUntil: null,
+                  cooldownReason: null,
+                  lastUsed: Date.now(),
+                })!
+                await persistOpenAIAuth(input, authState)
+                persisted = authState
+                continue
+              }
+
+              if (shouldRotateAuth(response)) {
+                authState = updateOpenAIAccount(authState, account.id, {
+                  cooldownUntil: Date.now() + AUTH_COOLDOWN_MS,
+                  cooldownReason: errorCode(body)?.toLowerCase().includes("usage") ? "entitlement" : "auth",
+                  lastUsed: Date.now(),
+                })!
+                await persistOpenAIAuth(input, authState)
+                persisted = authState
+                continue
+              }
+
+              if (response.status >= 500) {
+                authState = updateOpenAIAccount(authState, account.id, {
+                  cooldownUntil: Date.now() + SERVER_COOLDOWN_MS,
+                  cooldownReason: "server",
+                  lastUsed: Date.now(),
+                })!
+                await persistOpenAIAuth(input, authState)
+                persisted = authState
+                continue
+              }
+
+              return response
             }
-
-            // Set authorization header with access token
-            headers.set("authorization", `Bearer ${currentAuth.access}`)
-
-            // Set ChatGPT-Account-Id header for organization subscriptions
-            if (authWithAccount.accountId) {
-              headers.set("ChatGPT-Account-Id", authWithAccount.accountId)
-            }
-
-            // Rewrite URL to Codex endpoint
-            const parsed =
-              requestInput instanceof URL
-                ? requestInput
-                : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
-            const url =
-              parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
-                ? new URL(CODEX_API_ENDPOINT)
-                : parsed
-
-            return fetch(url, {
-              ...init,
-              headers,
-            })
           },
         }
       },
@@ -492,12 +725,14 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                 const tokens = await callbackPromise
                 stopOAuthServer()
                 const accountId = extractAccountId(tokens)
+                const email = extractEmail(tokens)
                 return {
                   type: "success" as const,
                   refresh: tokens.refresh_token,
                   access: tokens.access_token,
                   expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
                   accountId,
+                  email,
                 }
               },
             }
@@ -573,6 +808,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                       access: tokens.access_token,
                       expires: Date.now() + (tokens.expires_in ?? 3600) * 1000,
                       accountId: extractAccountId(tokens),
+                      email: extractEmail(tokens),
                     }
                   }
 

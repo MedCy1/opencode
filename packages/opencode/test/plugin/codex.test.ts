@@ -3,6 +3,8 @@ import {
   parseJwtClaims,
   extractAccountIdFromClaims,
   extractAccountId,
+  extractEmailFromClaims,
+  extractEmail,
   type IdTokenClaims,
 } from "../../src/plugin/codex"
 
@@ -118,6 +120,44 @@ describe("plugin.codex", () => {
           refresh_token: "rt",
         }),
       ).toBe("acc-123")
+    })
+  })
+
+  describe("extractEmailFromClaims", () => {
+    test("extracts email from root claim", () => {
+      expect(extractEmailFromClaims({ email: "root@example.com" })).toBe("root@example.com")
+    })
+
+    test("extracts nested email claim", () => {
+      expect(
+        extractEmailFromClaims({
+          "https://api.openai.com/auth": { email: "nested@example.com" },
+        }),
+      ).toBe("nested@example.com")
+    })
+  })
+
+  describe("extractEmail", () => {
+    test("prefers id_token email", () => {
+      const idToken = createTestJwt({ email: "id@example.com" })
+      const accessToken = createTestJwt({ email: "access@example.com" })
+      expect(
+        extractEmail({
+          id_token: idToken,
+          access_token: accessToken,
+          refresh_token: "rt",
+        }),
+      ).toBe("id@example.com")
+    })
+
+    test("falls back to access_token email", () => {
+      expect(
+        extractEmail({
+          id_token: createTestJwt({ chatgpt_account_id: "acc" }),
+          access_token: createTestJwt({ email: "access@example.com" }),
+          refresh_token: "rt",
+        }),
+      ).toBe("access@example.com")
     })
   })
 })
