@@ -1,4 +1,4 @@
-import type { OpenAioAuthAccountsResult, OpenAioAuthAccountSummary } from "@opencode-ai/sdk/v2/client"
+import type { OpenAioAuthAccountsResult } from "@opencode-ai/sdk/v2/client"
 import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
@@ -6,18 +6,8 @@ import { Spinner } from "@opencode-ai/ui/spinner"
 import { showToast } from "@opencode-ai/ui/toast"
 import { createResource, For, Show } from "solid-js"
 import { useGlobalSDK } from "@/context/global-sdk"
+import { openAIAccountLabel, openAIAccountStatus } from "./openai-account-display"
 import { DialogConnectProvider } from "./dialog-connect-provider"
-
-function label(account: OpenAioAuthAccountSummary, index: number) {
-  return account.label ?? account.email ?? account.accountId ?? `Account ${index + 1}`
-}
-
-function status(account: OpenAioAuthAccountSummary) {
-  if (account.available) return account.active ? "Active" : "Ready"
-  if (account.rateLimitedUntil) return "Rate limited"
-  if (account.cooldownUntil) return account.cooldownReason ? `Cooling down (${account.cooldownReason})` : "Cooling down"
-  return "Unavailable"
-}
 
 export function DialogOpenAIAccounts() {
   const dialog = useDialog()
@@ -97,9 +87,9 @@ export function DialogOpenAIAccounts() {
                 {(account, index) => (
                   <div class="flex flex-wrap items-center justify-between gap-4 px-4 py-4 border-b border-border-weak-base last:border-b-0">
                     <div class="flex flex-col min-w-0 gap-1">
-                      <div class="text-14-medium text-text-strong truncate">{label(account, index())}</div>
+                      <div class="text-14-medium text-text-strong truncate">{openAIAccountLabel(account, index())}</div>
                       <div class="text-12-regular text-text-weak flex flex-wrap gap-x-3 gap-y-1">
-                        <span>{status(account)}</span>
+                        <span>{openAIAccountStatus(account)}</span>
                         <Show when={account.accountId}>
                           <span class="font-mono">{account.accountId}</span>
                         </Show>

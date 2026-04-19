@@ -29,11 +29,11 @@ type MethodOption = {
   index: number
 }
 
-function openAIAccountLabel(account: Pick<OpenAioAuthAccountSummary, "label" | "email" | "accountId">, index: number) {
+export function openAIAccountLabel(account: Pick<OpenAioAuthAccountSummary, "label" | "email" | "accountId">, index: number) {
   return account.label ?? account.email ?? account.accountId ?? `Account ${index + 1}`
 }
 
-function openAIAccountStatus(account: OpenAioAuthAccountSummary) {
+export function openAIAccountStatus(account: OpenAioAuthAccountSummary) {
   if (account.active) return "Active"
   if (account.available) return "Ready"
   if (account.rateLimitedUntil) return "Rate limited"
