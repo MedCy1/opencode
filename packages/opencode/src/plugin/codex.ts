@@ -480,17 +480,28 @@ async function startOAuthServer(): Promise<{ port: number; redirectUri: string }
   return { port: OAUTH_PORT, redirectUri: `http://localhost:${OAUTH_PORT}/auth/callback` }
 }
 
-function stopOAuthServer() {
-  if (oauthServer) {
-    oauthServer.close(() => {
-      log.info("codex oauth server stopped")
-    })
+function stopOAuthServer(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!oauthServer) {
+      resolve()
+      return
+    }
+    const server = oauthServer
     oauthServer = undefined
-  }
+    server.close(() => {
+      log.info("codex oauth server stopped")
+      resolve()
+    })
+  })
 }
 
 function waitForOAuthCallback(pkce: PkceCodes, state: string): Promise<TokenResponse> {
   return new Promise((resolve, reject) => {
+    if (pendingOAuth) {
+      reject(new Error("Another OAuth authorization is already in progress"))
+      return
+    }
+
     const timeout = setTimeout(
       () => {
         if (pendingOAuth) {
@@ -499,7 +510,7 @@ function waitForOAuthCallback(pkce: PkceCodes, state: string): Promise<TokenResp
         }
       },
       5 * 60 * 1000,
-    ) // 5 minute timeout
+    )
 
     pendingOAuth = {
       pkce,
@@ -620,7 +631,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                     rateLimitedUntil: null,
                     cooldownUntil: null,
                     cooldownReason: null,
-                  })!
+                  })
                   await persistOpenAIAuth(input, authState)
                   persisted = authState
                   account = authState.accounts!.find((item) => item.id === account.id)!
@@ -633,7 +644,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                     cooldownUntil: Date.now() + AUTH_COOLDOWN_MS,
                     cooldownReason: "auth",
                     lastUsed: Date.now(),
-                  })!
+                  })
                   await persistOpenAIAuth(input, authState)
                   persisted = authState
                   continue
@@ -662,7 +673,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                   cooldownUntil: Date.now() + NETWORK_COOLDOWN_MS,
                   cooldownReason: "network",
                   lastUsed: Date.now(),
-                })!
+                })
                 await persistOpenAIAuth(input, authState)
                 persisted = authState
                 continue
@@ -684,18 +695,24 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                   cooldownUntil: null,
                   cooldownReason: null,
                   lastUsed: Date.now(),
-                })!
+                })
                 await persistOpenAIAuth(input, authState)
                 persisted = authState
                 continue
               }
 
               if (shouldRotateAuth(response)) {
+                const errCode = errorCode(body)?.toLowerCase() ?? ""
+                const isEntitlement =
+                  errCode.includes("usage") ||
+                  errCode.includes("quota") ||
+                  errCode.includes("entitlement") ||
+                  errCode.includes("subscription")
                 authState = updateOpenAIAccount(authState, account.id, {
                   cooldownUntil: Date.now() + AUTH_COOLDOWN_MS,
-                  cooldownReason: errorCode(body)?.toLowerCase().includes("usage") ? "entitlement" : "auth",
+                  cooldownReason: isEntitlement ? "entitlement" : "auth",
                   lastUsed: Date.now(),
-                })!
+                })
                 await persistOpenAIAuth(input, authState)
                 persisted = authState
                 continue
@@ -706,7 +723,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
                   cooldownUntil: Date.now() + SERVER_COOLDOWN_MS,
                   cooldownReason: "server",
                   lastUsed: Date.now(),
-                })!
+                })
                 await persistOpenAIAuth(input, authState)
                 persisted = authState
                 continue
@@ -735,7 +752,7 @@ export async function CodexAuthPlugin(input: PluginInput): Promise<Hooks> {
               method: "auto" as const,
               callback: async () => {
                 const tokens = await callbackPromise
-                stopOAuthServer()
+                await stopOAuthServer()
                 const accountId = extractAccountId(tokens)
                 const email = extractEmail(tokens)
                 return {
