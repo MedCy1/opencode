@@ -187,6 +187,7 @@ export const layer: Layer.Layer<Service, never, Auth.Service | Plugin.Service> =
       const pending = (yield* InstanceState.get(state)).pending
       const match = pending.get(input.providerID)
       if (!match) return yield* Effect.fail(new OauthMissing({ providerID: input.providerID }))
+      pending.delete(input.providerID)
       if (match.method === "code" && !input.code) {
         return yield* Effect.fail(new OauthCodeMissing({ providerID: input.providerID }))
       }
