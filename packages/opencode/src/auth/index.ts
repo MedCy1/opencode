@@ -136,8 +136,8 @@ function withAccount(input: OpenAIAccountInput, existing?: OpenAIAccount) {
   })
 }
 
-function syncOpenAI(input: Oauth, accounts: ReadonlyArray<OpenAIAccount>, activeAccountId?: string, rotationCursor?: number) {
-  if (accounts.length === 0) return
+function syncOpenAI(input: Oauth, accounts: ReadonlyArray<OpenAIAccount>, activeAccountId?: string, rotationCursor?: number): Oauth {
+  if (accounts.length === 0) throw new Error("syncOpenAI requires at least one account")
   const active = accounts.find((item) => item.id === activeAccountId) ?? accounts[0]
   return new Oauth({
     ...input,
@@ -308,7 +308,7 @@ export function normalizeOpenAIOauth(input: Oauth) {
           })
         })(),
       ]
-  return syncOpenAI(input, seed, input.activeAccountId, input.rotationCursor)!
+  return syncOpenAI(input, seed, input.activeAccountId, input.rotationCursor)
 }
 
 export function getOpenAIAccounts(input?: Info) {
@@ -333,7 +333,7 @@ export function upsertOpenAIAccount(input: Oauth | undefined, next: OpenAIAccoun
   } else {
     accounts[index] = account
   }
-  return syncOpenAI(base, accounts, account.id, nextRotationCursor(accounts, account.id))!
+  return syncOpenAI(base, accounts, account.id, nextRotationCursor(accounts, account.id))
 }
 
 export function selectOpenAIAccount(input: Oauth, accountID: string) {
@@ -341,7 +341,7 @@ export function selectOpenAIAccount(input: Oauth, accountID: string) {
   const accounts = [...(base.accounts ?? [])]
   const match = accounts.find((item) => item.id === accountID)
   if (!match) return
-  return syncOpenAI(base, accounts, match.id, nextRotationCursor(accounts, match.id))!
+  return syncOpenAI(base, accounts, match.id, nextRotationCursor(accounts, match.id))
 }
 
 export function removeOpenAIAccount(input: Oauth, accountID: string) {
@@ -352,11 +352,11 @@ export function removeOpenAIAccount(input: Oauth, accountID: string) {
   return syncOpenAI(base, accounts, activeAccountId, base.rotationCursor)
 }
 
-export function updateOpenAIAccount(input: Oauth, accountID: string, patch: Partial<OpenAIAccountInput>) {
+export function updateOpenAIAccount(input: Oauth, accountID: string, patch: Partial<OpenAIAccountInput>): Oauth {
   const base = normalizeOpenAIOauth(input)
   const accounts = [...(base.accounts ?? [])]
   const index = findOpenAIAccountIndex(accounts, { id: accountID })
-  if (index === -1) return
+  if (index === -1) throw new Error(`updateOpenAIAccount: account not found: ${accountID}`)
   const current = accounts[index]
   accounts[index] = withAccount(
     {
@@ -376,7 +376,7 @@ export function updateOpenAIAccount(input: Oauth, accountID: string, patch: Part
     },
     current,
   )
-  return syncOpenAI(base, accounts, base.activeAccountId, base.rotationCursor)!
+  return syncOpenAI(base, accounts, base.activeAccountId, base.rotationCursor)
 }
 
 export function nextOpenAIAccount(input: Oauth, now = Date.now()) {
@@ -389,7 +389,7 @@ export function nextOpenAIAccount(input: Oauth, now = Date.now()) {
   while (index < accounts.length) {
     const candidate = accounts[(start + index) % accounts.length]
     if (accountReady(candidate, now)) {
-      const next = syncOpenAI(auth, accounts, candidate.id, nextRotationCursor(accounts, candidate.id))!
+      const next = syncOpenAI(auth, accounts, candidate.id, nextRotationCursor(accounts, candidate.id))
       return { auth: next, account: candidate, wait: 0, rateLimitWait: 0, cooldownWait: 0 }
     }
     index += 1
