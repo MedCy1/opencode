@@ -4,7 +4,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { Spinner } from "@opencode-ai/ui/spinner"
 import { showToast } from "@opencode-ai/ui/toast"
-import { createResource, For, Show } from "solid-js"
+import { createResource, createSignal, For, Show } from "solid-js"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { openAIAccountHealth, openAIAccountLabel, openAIAccountLastUsed, openAIStatusOverview } from "./openai-account-display"
 import { DialogConnectProvider } from "./dialog-connect-provider"
@@ -12,6 +12,7 @@ import { DialogConnectProvider } from "./dialog-connect-provider"
 export function DialogOpenAIAccounts() {
   const dialog = useDialog()
   const globalSDK = useGlobalSDK()
+  const [busy, setBusy] = createSignal(false)
   const [status, { refetch }] = createResource<OpenAioAuthStatusResult>(async () => {
     const result = await globalSDK.client.provider.openai.oauth.account.status(undefined, { throwOnError: true })
     return result.data ?? { accounts: [] }
@@ -23,27 +24,45 @@ export function DialogOpenAIAccounts() {
   }
 
   async function activate(accountID: string) {
-    await globalSDK.client.provider.openai.oauth.account.select({ accountID }, { throwOnError: true })
-    await refresh()
-    showToast({ variant: "success", icon: "circle-check", title: "Active account updated" })
+    if (busy()) return
+    setBusy(true)
+    try {
+      await globalSDK.client.provider.openai.oauth.account.select({ accountID }, { throwOnError: true })
+      await refresh()
+      showToast({ variant: "success", icon: "circle-check", title: "Active account updated" })
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function remove(accountID: string) {
-    await globalSDK.client.provider.openai.oauth.account.remove({ accountID }, { throwOnError: true })
-    await refresh()
-    if ((status.latest?.accounts.length ?? 0) === 0) {
-      dialog.close()
+    if (busy()) return
+    setBusy(true)
+    try {
+      await globalSDK.client.provider.openai.oauth.account.remove({ accountID }, { throwOnError: true })
+      await refresh()
+      if ((status.latest?.accounts.length ?? 0) === 0) {
+        dialog.close()
+        showToast({ variant: "success", icon: "circle-check", title: "OpenAI account removed" })
+        return
+      }
       showToast({ variant: "success", icon: "circle-check", title: "OpenAI account removed" })
-      return
+    } finally {
+      setBusy(false)
     }
-    showToast({ variant: "success", icon: "circle-check", title: "OpenAI account removed" })
   }
 
   async function disconnectAll() {
-    await globalSDK.client.auth.remove({ providerID: "openai" }, { throwOnError: true })
-    await globalSDK.client.global.dispose().catch(() => undefined)
-    dialog.close()
-    showToast({ variant: "success", icon: "circle-check", title: "OpenAI disconnected" })
+    if (busy()) return
+    setBusy(true)
+    try {
+      await globalSDK.client.auth.remove({ providerID: "openai" }, { throwOnError: true })
+      await globalSDK.client.global.dispose().catch(() => undefined)
+      dialog.close()
+      showToast({ variant: "success", icon: "circle-check", title: "OpenAI disconnected" })
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -53,6 +72,7 @@ export function DialogOpenAIAccounts() {
           <Button
             size="large"
             variant="secondary"
+            disabled={busy()}
             onClick={() => {
               dialog.close()
               dialog.show(() => <DialogConnectProvider provider="openai" />)
@@ -60,7 +80,7 @@ export function DialogOpenAIAccounts() {
           >
             Add account
           </Button>
-          <Button size="large" variant="ghost" onClick={() => void disconnectAll()}>
+          <Button size="large" variant="ghost" disabled={busy()} onClick={() => void disconnectAll()}>
             Disconnect OpenAI
           </Button>
         </div>
@@ -135,11 +155,11 @@ export function DialogOpenAIAccounts() {
                     </div>
                     <div class="flex flex-wrap items-center gap-2">
                       <Show when={!account.active}>
-                        <Button size="large" variant="secondary" onClick={() => void activate(account.id)}>
+                        <Button size="large" variant="secondary" disabled={busy()} onClick={() => void activate(account.id)}>
                           Make active
                         </Button>
                       </Show>
-                      <Button size="large" variant="ghost" onClick={() => void remove(account.id)}>
+                      <Button size="large" variant="ghost" disabled={busy()} onClick={() => void remove(account.id)}>
                         Remove
                       </Button>
                     </div>
